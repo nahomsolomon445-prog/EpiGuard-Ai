@@ -1,13 +1,58 @@
 import { useState, useEffect, useRef } from 'react';
-import { Shield, Activity, Users, AlertTriangle, Settings, Bell, HeartPulse, Thermometer, Droplets, Brain, Zap, Watch, Smartphone, MapPin, PhoneCall, CheckCircle2, MessageSquare } from 'lucide-react';
+import { Shield, Activity, Users, AlertTriangle, Settings, Bell, HeartPulse, Thermometer, Droplets, Brain, Zap, Watch, Smartphone, MapPin, PhoneCall, CheckCircle2, MessageSquare, Moon, Sun, Bluetooth, BluetoothSearching } from 'lucide-react';
+import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
 
 type PatientState = 'normal' | 'ictal' | 'post-ictal';
 type EmergencyState = 'idle' | 'locating' | 'calling' | 'notified';
 
+function Sparkline({ data, color }: { data: number[], color: string }) {
+  const chartData = data.map((val, i) => ({ value: val, index: i }));
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const padding = (max - min) * 0.1 || 1;
+
+  return (
+    <div className="h-8 w-16 sm:w-20 opacity-70">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={chartData}>
+          <YAxis domain={[min - padding, max + padding]} hide />
+          <Line 
+            type="monotone" 
+            dataKey="value" 
+            stroke={color} 
+            strokeWidth={2} 
+            dot={false} 
+            isAnimationActive={false} 
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export default function App() {
+  // Theme State
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('epiguard-theme');
+    if (saved) return saved === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  // Apply theme class to document
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('epiguard-theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('epiguard-theme', 'light');
+    }
+  }, [isDarkMode]);
+
   // Connection State
   const [connectionMode, setConnectionMode] = useState<'simulated' | 'watch'>('simulated');
   const [watchName, setWatchName] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Patient Physiological State
   const [patientState, setPatientState] = useState<PatientState>('normal');
@@ -25,25 +70,38 @@ export default function App() {
     diastolic: 80,
     temperature: 36.5,
     activeCases: 1248,
-    pendingAlerts: 24
+    pendingAlerts: 24,
+    history: {
+      heartRate: Array(20).fill(72),
+      o2Sat: Array(20).fill(98),
+      systolic: Array(20).fill(120),
+      diastolic: Array(20).fill(80),
+      temperature: Array(20).fill(36.5)
+    }
   });
 
   // Neurological State
   const [neurological, setNeurological] = useState({
     eegIndex: 45,
     movement: 12,
-    seizureRisk: 'Low'
+    seizureRisk: 'Low',
+    history: {
+      eegIndex: Array(20).fill(45),
+      movement: Array(20).fill(12)
+    }
   });
 
   // Smartwatch Connection (Web Bluetooth API)
   const connectWatch = async () => {
     try {
       if (!navigator.bluetooth) {
-        alert("Web Bluetooth is not supported in this browser. Continuing in simulation mode.");
+        alert("Web Bluetooth is not supported in this browser. Please use Chrome or Edge on Android/Desktop.");
         return;
       }
+      setIsScanning(true);
       const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: ['heart_rate'] }]
+        acceptAllDevices: true,
+        optionalServices: ['heart_rate']
       });
       const server = await device.gatt?.connect();
       const service = await server?.getPrimaryService('heart_rate');
@@ -58,8 +116,10 @@ export default function App() {
 
       setWatchName(device.name || 'Smartwatch');
       setConnectionMode('watch');
+      setIsScanning(false);
     } catch (error) {
       console.error("Bluetooth connection failed:", error);
+      setIsScanning(false);
       alert("Could not connect to smartwatch. Ensure Bluetooth is enabled and a compatible device is nearby. Falling back to realistic simulation.");
     }
   };
@@ -153,15 +213,28 @@ export default function App() {
         // Only simulate HR if watch is not connected
         const newHR = connectionMode === 'watch' ? prev.heartRate : prev.heartRate * (1 - alpha) + (targetHR + (Math.random() * 2 - 1)) * alpha;
 
+        const finalHR = Math.round(newHR);
+        const finalO2 = Math.round(prev.o2Sat * (1 - alpha) + (targetO2 + (Math.random() * 1 - 0.5)) * alpha);
+        const finalSys = Math.round(prev.systolic * (1 - alpha) + (targetSys + (Math.random() * 2 - 1)) * alpha);
+        const finalDia = Math.round(prev.diastolic * (1 - alpha) + (targetDia + (Math.random() * 2 - 1)) * alpha);
+        const finalTemp = prev.temperature * (1 - alpha) + (targetTemp + (Math.random() * 0.1 - 0.05)) * alpha;
+
         return {
           ...prev,
-          heartRate: Math.round(newHR),
-          o2Sat: Math.round(prev.o2Sat * (1 - alpha) + (targetO2 + (Math.random() * 1 - 0.5)) * alpha),
-          systolic: Math.round(prev.systolic * (1 - alpha) + (targetSys + (Math.random() * 2 - 1)) * alpha),
-          diastolic: Math.round(prev.diastolic * (1 - alpha) + (targetDia + (Math.random() * 2 - 1)) * alpha),
-          temperature: prev.temperature * (1 - alpha) + (targetTemp + (Math.random() * 0.1 - 0.05)) * alpha,
+          heartRate: finalHR,
+          o2Sat: finalO2,
+          systolic: finalSys,
+          diastolic: finalDia,
+          temperature: finalTemp,
           activeCases: prev.activeCases + (Math.random() > 0.95 ? 1 : 0),
-          pendingAlerts: patientState === 'ictal' ? prev.pendingAlerts : Math.max(0, prev.pendingAlerts + (Math.random() > 0.9 ? 1 : (Math.random() > 0.8 ? -1 : 0)))
+          pendingAlerts: patientState === 'ictal' ? prev.pendingAlerts : Math.max(0, prev.pendingAlerts + (Math.random() > 0.9 ? 1 : (Math.random() > 0.8 ? -1 : 0))),
+          history: {
+            heartRate: [...prev.history.heartRate.slice(1), finalHR],
+            o2Sat: [...prev.history.o2Sat.slice(1), finalO2],
+            systolic: [...prev.history.systolic.slice(1), finalSys],
+            diastolic: [...prev.history.diastolic.slice(1), finalDia],
+            temperature: [...prev.history.temperature.slice(1), finalTemp]
+          }
         };
       });
 
@@ -189,10 +262,17 @@ export default function App() {
         else if (patientState === 'post-ictal') risk = 'Recovery';
         else if (newEeg > 75 || newMovement > 80) risk = 'Medium';
 
+        const finalEeg = Math.max(0, Math.min(100, newEeg));
+        const finalMovement = Math.max(0, Math.min(100, newMovement));
+
         return {
-          eegIndex: Math.max(0, Math.min(100, newEeg)),
-          movement: Math.max(0, Math.min(100, newMovement)),
-          seizureRisk: risk
+          eegIndex: finalEeg,
+          movement: finalMovement,
+          seizureRisk: risk,
+          history: {
+            eegIndex: [...prev.history.eegIndex.slice(1), finalEeg],
+            movement: [...prev.history.movement.slice(1), finalMovement]
+          }
         };
       });
     }, 1000);
@@ -222,9 +302,9 @@ export default function App() {
   const smsBody = `EMERGENCY: Patient AD is experiencing a seizure. Location: ${mapsLink}`;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col transition-colors duration-200">
       {/* Header */}
-      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between">
+      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between transition-colors duration-200">
         <div className="flex items-center gap-2">
           <Shield className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">EpiGuard</h1>
@@ -234,14 +314,32 @@ export default function App() {
           {/* Smartwatch Connection Status */}
           <button 
             onClick={connectWatch}
+            disabled={isScanning}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
               connectionMode === 'watch' 
                 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+                : isScanning
+                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 cursor-wait'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
             }`}
           >
-            {connectionMode === 'watch' ? <Watch className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
-            {connectionMode === 'watch' ? `Connected: ${watchName}` : 'Connect Watch'}
+            {isScanning ? (
+              <BluetoothSearching className="w-4 h-4 animate-pulse" />
+            ) : connectionMode === 'watch' ? (
+              <Watch className="w-4 h-4" />
+            ) : (
+              <Bluetooth className="w-4 h-4" />
+            )}
+            {isScanning ? 'Scanning...' : connectionMode === 'watch' ? `Connected: ${watchName}` : 'Scan for Smartwatch'}
+          </button>
+
+          {/* Theme Toggle */}
+          <button 
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            className="relative p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+            aria-label="Toggle Dark Mode"
+          >
+            {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
 
           <button className="relative p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors">
@@ -258,7 +356,7 @@ export default function App() {
 
       <div className="flex flex-1">
         {/* Sidebar */}
-        <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 p-4 hidden md:block">
+        <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 p-4 hidden md:block transition-colors duration-200">
           <nav className="space-y-1">
             <a href="#" className="flex items-center gap-3 px-3 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 rounded-lg font-medium">
               <Activity className="w-5 h-5" />
@@ -359,8 +457,11 @@ export default function App() {
               {/* Heart Rate */}
               <div className={`p-6 rounded-xl border shadow-sm transition-all duration-500 ${patientState === 'ictal' ? 'bg-red-50 dark:bg-red-900/20 border-red-500' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 rounded-lg">
-                    <HeartPulse className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 rounded-lg">
+                      <HeartPulse className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={vitals.history.heartRate} color="#e11d48" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-rose-600 bg-rose-50 dark:bg-rose-900/20'}`}>
                     {patientState === 'ictal' ? 'Tachycardia' : 'Normal'}
@@ -378,8 +479,11 @@ export default function App() {
               {/* Blood Pressure */}
               <div className={`p-6 rounded-xl border shadow-sm transition-all duration-500 ${patientState === 'ictal' ? 'bg-red-50 dark:bg-red-900/20 border-red-500' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg">
-                    <Activity className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg">
+                      <Activity className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={vitals.history.systolic} color="#9333ea" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-purple-600 bg-purple-50 dark:bg-purple-900/20'}`}>
                     {patientState === 'ictal' ? 'Hypertension' : 'Normal'}
@@ -397,8 +501,11 @@ export default function App() {
               {/* O2 Saturation */}
               <div className={`p-6 rounded-xl border shadow-sm transition-all duration-500 ${patientState === 'ictal' ? 'bg-orange-50 dark:bg-orange-900/20 border-orange-500' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg">
-                    <Droplets className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg">
+                      <Droplets className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={vitals.history.o2Sat} color="#2563eb" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-orange-500 text-white' : 'text-blue-600 bg-blue-50 dark:bg-blue-900/20'}`}>
                     {patientState === 'ictal' ? 'Hypoxia' : 'Good'}
@@ -416,8 +523,11 @@ export default function App() {
               {/* Temperature */}
               <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm transition-all duration-500">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 rounded-lg">
-                    <Thermometer className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 rounded-lg">
+                      <Thermometer className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={vitals.history.temperature} color="#ea580c" />
                   </div>
                   <span className="text-xs font-medium text-orange-600 bg-orange-50 dark:bg-orange-900/20 px-2 py-1 rounded-full">Normal</span>
                 </div>
@@ -444,8 +554,11 @@ export default function App() {
               {/* EEG Activity */}
               <div className={`p-6 rounded-xl border shadow-sm transition-all duration-500 ${patientState === 'ictal' ? 'bg-red-50 dark:bg-red-900/20 border-red-500' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-lg">
-                    <Brain className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-lg">
+                      <Brain className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={neurological.history.eegIndex} color="#4f46e5" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20'}`}>
                     {neurological.seizureRisk}
@@ -468,8 +581,11 @@ export default function App() {
               {/* Movement Index */}
               <div className={`p-6 rounded-xl border shadow-sm transition-all duration-500 ${patientState === 'ictal' ? 'bg-red-50 dark:bg-red-900/20 border-red-500' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className="p-3 bg-teal-50 dark:bg-teal-900/20 text-teal-600 dark:text-teal-400 rounded-lg">
-                    <Zap className="w-6 h-6" />
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-teal-50 dark:bg-teal-900/20 text-teal-600 dark:text-teal-400 rounded-lg">
+                      <Zap className="w-6 h-6" />
+                    </div>
+                    <Sparkline data={neurological.history.movement} color="#0d9488" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-teal-600 bg-teal-50 dark:bg-teal-900/20'}`}>
                     {neurological.seizureRisk}
@@ -487,34 +603,6 @@ export default function App() {
                     <div className="h-full bg-red-500 w-full animate-pulse"></div>
                   </div>
                 )}
-              </div>
-            </div>
-
-            {/* System Overview */}
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">System Overview</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded-lg">
-                    <Users className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Active Cases Monitored</p>
-                    <p className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{vitals.activeCases.toLocaleString()}</p>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-lg">
-                    <AlertTriangle className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Pending Alerts</p>
-                    <p className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{vitals.pendingAlerts}</p>
-                  </div>
-                </div>
               </div>
             </div>
 
