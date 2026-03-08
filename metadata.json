@@ -1,0 +1,5 @@
+{
+  "name": "EpiGuard",
+  "description": "A web-based version of EpiGuard.",
+  "requestFramePermissions": []
+}
