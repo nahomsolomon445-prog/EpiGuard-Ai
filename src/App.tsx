@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Shield, Activity, Users, AlertTriangle, Settings, Bell, HeartPulse, Thermometer, Droplets, Brain, Zap, Watch, Smartphone, MapPin, PhoneCall, CheckCircle2, MessageSquare, Moon, Sun, Bluetooth, BluetoothSearching } from 'lucide-react';
+import { Shield, Activity, Users, AlertTriangle, Settings, Bell, HeartPulse, Thermometer, Droplets, Brain, Zap, Watch, Smartphone, MapPin, PhoneCall, CheckCircle2, MessageSquare, Moon, Sun, Bluetooth, BluetoothSearching, Menu, X, LogOut, User, ChevronLeft } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
 
 type PatientState = 'normal' | 'ictal' | 'post-ictal';
@@ -36,6 +36,45 @@ export default function App() {
     const saved = localStorage.getItem('epiguard-theme');
     if (saved) return saved === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  // Sidebar State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [sidebarView, setSidebarView] = useState<'menu' | 'settings' | 'profile'>('menu');
+
+  // User Profile State
+  const [userProfile, setUserProfile] = useState<{name: string, email: string, image: string} | null>(() => {
+    const saved = localStorage.getItem('epiguard-user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
+
+  const handleGoogleLogin = () => {
+    // Mock Google Login
+    const mockUser = {
+      name: "Nahom Solomon",
+      email: "nahomsolomon445@gmail.com",
+      image: `https://api.dicebear.com/7.x/avataaars/svg?seed=Nahom`
+    };
+    setUserProfile(mockUser);
+    localStorage.setItem('epiguard-user', JSON.stringify(mockUser));
+  };
+
+  const handleLogout = () => {
+    setUserProfile(null);
+    localStorage.removeItem('epiguard-user');
+    setSidebarView('menu');
+  };
+
+  // Onboarding State
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    return localStorage.getItem('epiguard-onboarding-complete') !== 'true';
+  });
+
+  const [permissions, setPermissions] = useState({
+    bluetooth: false,
+    location: false,
+    notifications: false
   });
 
   // Apply theme class to document
@@ -116,12 +155,43 @@ export default function App() {
 
       setWatchName(device.name || 'Smartwatch');
       setConnectionMode('watch');
+      setPermissions(prev => ({ ...prev, bluetooth: true }));
       setIsScanning(false);
     } catch (error) {
       console.error("Bluetooth connection failed:", error);
       setIsScanning(false);
       alert("Could not connect to smartwatch. Ensure Bluetooth is enabled and a compatible device is nearby. Falling back to realistic simulation.");
     }
+  };
+
+  const requestLocationPermission = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => setPermissions(prev => ({ ...prev, location: true })),
+        (err) => {
+          console.error("Location permission denied:", err);
+          alert("Location access is required for emergency GPS tracking.");
+        }
+      );
+    } else {
+      alert("Geolocation is not supported by this browser.");
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) {
+      alert("This browser does not support desktop notification");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      setPermissions(prev => ({ ...prev, notifications: true }));
+    }
+  };
+
+  const completeOnboarding = () => {
+    localStorage.setItem('epiguard-onboarding-complete', 'true');
+    setShowOnboarding(false);
   };
 
   // Auto-Detect Seizure from Watch Data
@@ -213,6 +283,14 @@ export default function App() {
         // Only simulate HR if watch is not connected
         const newHR = connectionMode === 'watch' ? prev.heartRate : prev.heartRate * (1 - alpha) + (targetHR + (Math.random() * 2 - 1)) * alpha;
 
+        if (connectionMode === 'watch') {
+          // Derive other vitals from real heart rate to make them real-time responsive
+          targetO2 = Math.max(85, 98 - Math.max(0, (newHR - 80) * 0.1));
+          targetSys = 120 + (newHR - 72) * 0.5;
+          targetDia = 80 + (newHR - 72) * 0.2;
+          targetTemp = 36.5 + (newHR - 72) * 0.005;
+        }
+
         const finalHR = Math.round(newHR);
         const finalO2 = Math.round(prev.o2Sat * (1 - alpha) + (targetO2 + (Math.random() * 1 - 0.5)) * alpha);
         const finalSys = Math.round(prev.systolic * (1 - alpha) + (targetSys + (Math.random() * 2 - 1)) * alpha);
@@ -251,6 +329,12 @@ export default function App() {
         } else {
           targetEeg = 45 + Math.sin(t * 0.2) * 10; // Normal alpha/beta waves
           targetMovement = 12 + Math.sin(t * 0.1) * 5; // Normal fidgeting
+        }
+
+        if (connectionMode === 'watch') {
+          // Derive from real HR
+          targetEeg = 45 + (vitals.heartRate - 72) * 0.5;
+          targetMovement = 12 + Math.max(0, (vitals.heartRate - 72) * 0.8);
         }
 
         const alpha = 0.4;
@@ -303,11 +387,116 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col transition-colors duration-200">
+      {/* Onboarding Modal */}
+      {showOnboarding && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full p-8 animate-in zoom-in-95 duration-300">
+            <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full mb-6 mx-auto">
+              <Shield className="w-8 h-8" />
+            </div>
+            <h2 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-2">Welcome to EpiGuard</h2>
+            <p className="text-center text-gray-600 dark:text-gray-400 mb-8">
+              To provide life-saving monitoring and alerts, EpiGuard needs access to a few device features.
+            </p>
+
+            <div className="space-y-4 mb-8">
+              {/* Bluetooth Permission */}
+              <div className="flex items-center justify-between p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg ${permissions.bluetooth ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}`}>
+                    <Bluetooth className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-medium text-gray-900 dark:text-white">Smartwatch</h4>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Monitor vitals</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={connectWatch}
+                  disabled={permissions.bluetooth || isScanning}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                    permissions.bluetooth 
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                >
+                  {permissions.bluetooth ? 'Connected' : isScanning ? 'Scanning...' : 'Connect'}
+                </button>
+              </div>
+
+              {/* Location Permission */}
+              <div className="flex items-center justify-between p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg ${permissions.location ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400'}`}>
+                    <MapPin className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-medium text-gray-900 dark:text-white">Location (GPS)</h4>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">For emergency dispatch</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={requestLocationPermission}
+                  disabled={permissions.location}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                    permissions.location 
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+                      : 'bg-orange-600 hover:bg-orange-700 text-white'
+                  }`}
+                >
+                  {permissions.location ? 'Granted' : 'Allow'}
+                </button>
+              </div>
+
+              {/* Notifications Permission */}
+              <div className="flex items-center justify-between p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg ${permissions.notifications ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'}`}>
+                    <Bell className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-medium text-gray-900 dark:text-white">Notifications</h4>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Critical alerts</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={requestNotificationPermission}
+                  disabled={permissions.notifications}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                    permissions.notifications 
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+                      : 'bg-purple-600 hover:bg-purple-700 text-white'
+                  }`}
+                >
+                  {permissions.notifications ? 'Granted' : 'Allow'}
+                </button>
+              </div>
+            </div>
+
+            <button 
+              onClick={completeOnboarding}
+              className="w-full bg-gray-900 hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-100 text-white dark:text-gray-900 py-3 rounded-xl font-semibold transition-colors"
+            >
+              Continue to Dashboard
+            </button>
+            <p className="text-center text-xs text-gray-500 mt-4">
+              You can always change these settings later. If you skip smartwatch connection, EpiGuard will run in simulation mode.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between transition-colors duration-200">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => { setIsSidebarOpen(true); setSidebarView('menu'); }}
+            className="p-2 -ml-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
           <Shield className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">EpiGuard</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight hidden sm:block">EpiGuard</h1>
         </div>
         <div className="flex items-center gap-4">
           
@@ -315,22 +504,22 @@ export default function App() {
           <button 
             onClick={connectWatch}
             disabled={isScanning}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+            className={`relative p-2 rounded-full transition-colors ${
               connectionMode === 'watch' 
-                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+                ? 'text-emerald-600 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:hover:bg-emerald-800/40' 
                 : isScanning
-                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 cursor-wait'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                ? 'text-blue-600 bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400 cursor-wait'
+                : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-gray-400'
             }`}
+            title={isScanning ? 'Scanning...' : connectionMode === 'watch' ? `Connected: ${watchName}` : 'Connect Smartwatch'}
           >
             {isScanning ? (
-              <BluetoothSearching className="w-4 h-4 animate-pulse" />
+              <BluetoothSearching className="w-6 h-6 animate-pulse" />
             ) : connectionMode === 'watch' ? (
-              <Watch className="w-4 h-4" />
+              <Watch className="w-6 h-6" />
             ) : (
-              <Bluetooth className="w-4 h-4" />
+              <Bluetooth className="w-6 h-6" />
             )}
-            {isScanning ? 'Scanning...' : connectionMode === 'watch' ? `Connected: ${watchName}` : 'Scan for Smartwatch'}
           </button>
 
           {/* Theme Toggle */}
@@ -348,11 +537,206 @@ export default function App() {
               <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white dark:border-gray-800"></span>
             )}
           </button>
-          <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-700 dark:text-emerald-300 font-medium">
-            AD
+          <div className="relative">
+            {userProfile ? (
+              <img 
+                src={userProfile.image} 
+                alt={userProfile.name} 
+                className="w-10 h-10 rounded-full border border-gray-200 dark:border-gray-700 cursor-pointer" 
+                onClick={() => setIsProfileDropdownOpen(!isProfileDropdownOpen)} 
+              />
+            ) : (
+              <div 
+                onClick={() => setIsProfileDropdownOpen(!isProfileDropdownOpen)}
+                className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-700 dark:text-emerald-300 font-medium cursor-pointer hover:bg-emerald-200 dark:hover:bg-emerald-900/50 transition-colors"
+              >
+                <User className="w-5 h-5" />
+              </div>
+            )}
+
+            {isProfileDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+                {userProfile ? (
+                  <>
+                    <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{userProfile.name}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{userProfile.email}</p>
+                    </div>
+                    <button 
+                      onClick={() => { handleLogout(); setIsProfileDropdownOpen(false); }}
+                      className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Logout
+                    </button>
+                  </>
+                ) : (
+                  <button 
+                    onClick={() => { handleGoogleLogin(); setIsProfileDropdownOpen(false); }}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                  >
+                    <User className="w-4 h-4" />
+                    Sign In
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </header>
+
+      {/* Sliding Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 transition-opacity"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sliding Sidebar */}
+      <div className={`fixed inset-y-0 left-0 z-50 w-80 bg-white dark:bg-gray-900 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+          {sidebarView !== 'menu' ? (
+            <button 
+              onClick={() => setSidebarView('menu')}
+              className="p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 px-2">
+              <Shield className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+              <span className="font-bold text-lg dark:text-white">Menu</span>
+            </div>
+          )}
+          <button 
+            onClick={() => setIsSidebarOpen(false)}
+            className="p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {sidebarView === 'menu' && (
+            <div className="space-y-2">
+              <button 
+                onClick={() => setSidebarView('profile')}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
+              >
+                {userProfile ? (
+                  <img src={userProfile.image} alt="Profile" className="w-6 h-6 rounded-full" />
+                ) : (
+                  <User className="w-5 h-5" />
+                )}
+                <span className="font-medium">Profile</span>
+              </button>
+              <button 
+                onClick={() => setSidebarView('settings')}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
+              >
+                <Settings className="w-5 h-5" />
+                <span className="font-medium">Settings</span>
+              </button>
+              {userProfile && (
+                <button 
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors mt-8"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span className="font-medium">Logout</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {sidebarView === 'settings' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4">Emergency Contacts</h3>
+                <div className="space-y-4">
+                  <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700">
+                    <h4 className="font-medium text-gray-900 dark:text-white mb-1">Ethio Telecom</h4>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500 dark:text-gray-400">Police</span>
+                        <a href="tel:991" className="text-emerald-600 dark:text-emerald-400 font-medium">991</a>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500 dark:text-gray-400">Ambulance</span>
+                        <a href="tel:902" className="text-emerald-600 dark:text-emerald-400 font-medium">902</a>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500 dark:text-gray-400">Fire Emergency</span>
+                        <a href="tel:939" className="text-emerald-600 dark:text-emerald-400 font-medium">939</a>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700">
+                    <h4 className="font-medium text-gray-900 dark:text-white mb-1">Safaricom Ethiopia</h4>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500 dark:text-gray-400">Emergency Line</span>
+                        <a href="tel:999" className="text-emerald-600 dark:text-emerald-400 font-medium">999</a>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500 dark:text-gray-400">Customer Care</span>
+                        <a href="tel:700" className="text-emerald-600 dark:text-emerald-400 font-medium">700</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {sidebarView === 'profile' && (
+            <div className="flex flex-col items-center justify-center h-full pb-20">
+              {userProfile ? (
+                <div className="text-center space-y-4 w-full">
+                  <img src={userProfile.image} alt={userProfile.name} className="w-24 h-24 rounded-full mx-auto border-4 border-emerald-100 dark:border-emerald-900/30" />
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white">{userProfile.name}</h3>
+                    <p className="text-gray-500 dark:text-gray-400">{userProfile.email}</p>
+                  </div>
+                  <div className="pt-8 w-full">
+                    <button 
+                      onClick={handleLogout}
+                      className="w-full bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:hover:bg-red-900/50 dark:text-red-400 py-3 rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      <LogOut className="w-5 h-5" />
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center space-y-6 w-full">
+                  <div className="w-20 h-20 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mx-auto">
+                    <User className="w-10 h-10 text-gray-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Sign In</h3>
+                    <p className="text-gray-500 dark:text-gray-400 text-sm">Sign in to sync your emergency contacts and medical history.</p>
+                  </div>
+                  <button 
+                    onClick={handleGoogleLogin}
+                    className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-900 dark:text-white py-3 px-4 rounded-xl font-medium transition-colors flex items-center justify-center gap-3 shadow-sm"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                    </svg>
+                    Continue with Google
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="flex flex-1">
         {/* Sidebar */}
