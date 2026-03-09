@@ -2,17 +2,25 @@ import { useState, useEffect, useRef } from 'react';
 import { Shield, Activity, Users, AlertTriangle, Settings, Bell, HeartPulse, Thermometer, Droplets, Brain, Zap, Watch, Smartphone, MapPin, PhoneCall, CheckCircle2, MessageSquare, Moon, Sun, Bluetooth, BluetoothSearching, Menu, X, LogOut, User, ChevronLeft } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
 
-type PatientState = 'normal' | 'ictal' | 'post-ictal';
+type PatientState = 'normal' | 'warning' | 'ictal' | 'post-ictal';
 type EmergencyState = 'idle' | 'locating' | 'calling' | 'notified';
 
-function Sparkline({ data, color }: { data: number[], color: string }) {
+interface SeizureEvent {
+  id: string;
+  timestamp: string;
+  duration: number;
+  type: 'Auto' | 'Manual';
+  notes?: string;
+}
+
+function Sparkline({ data, color, className = "h-8 w-16 sm:w-20 opacity-70" }: { data: number[], color: string, className?: string }) {
   const chartData = data.map((val, i) => ({ value: val, index: i }));
   const min = Math.min(...data);
   const max = Math.max(...data);
   const padding = (max - min) * 0.1 || 1;
 
   return (
-    <div className="h-8 w-16 sm:w-20 opacity-70">
+    <div className={className}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={chartData}>
           <YAxis domain={[min - padding, max + padding]} hide />
@@ -95,7 +103,28 @@ export default function App() {
 
   // Patient Physiological State
   const [patientState, setPatientState] = useState<PatientState>('normal');
+  const [seizureCount, setSeizureCount] = useState(0);
+  const [warningCount, setWarningCount] = useState(0);
   const tickRef = useRef(0);
+
+  // New Features State
+  const [alertCountdown, setAlertCountdown] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'settings'>('dashboard');
+  const [seizureHistory, setSeizureHistory] = useState<SeizureEvent[]>(() => {
+    const saved = localStorage.getItem('epiguard-history');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [appSettings, setAppSettings] = useState(() => {
+    const saved = localStorage.getItem('epiguard-settings');
+    return saved ? JSON.parse(saved) : {
+      hrThreshold: 120,
+      movementThreshold: 80,
+      eegThreshold: 80,
+      countdownSeconds: 15
+    };
+  });
+  const [currentSeizureStartTime, setCurrentSeizureStartTime] = useState<number | null>(null);
+  const [currentSeizureType, setCurrentSeizureType] = useState<'Auto' | 'Manual' | null>(null);
 
   // Emergency Protocol State
   const [emergencyState, setEmergencyState] = useState<EmergencyState>('idle');
@@ -194,16 +223,21 @@ export default function App() {
     setShowOnboarding(false);
   };
 
-  // Auto-Detect Seizure from Watch Data
+  // Auto-Detect Seizure from Sensor Data
   useEffect(() => {
-    if (connectionMode === 'watch' && patientState === 'normal') {
-      // Simple detection heuristic: sustained high heart rate from the watch
-      // In a real medical device, this would combine HR, HRV, and accelerometer data.
-      if (vitals.heartRate > 120) {
-        triggerSeizure();
+    if (patientState === 'normal') {
+      // Detection heuristic: high heart rate, low O2, high movement, high EEG
+      const isHighHR = vitals.heartRate > appSettings.hrThreshold;
+      const isLowO2 = vitals.o2Sat < 90;
+      const isHighMovement = neurological.movement > appSettings.movementThreshold;
+      const isHighEeg = neurological.eegIndex > appSettings.eegThreshold;
+
+      // If multiple indicators are present, trigger a seizure
+      if ((isHighHR && isHighMovement) || (isHighEeg && isHighMovement) || (isHighHR && isLowO2)) {
+        triggerSeizure('Auto');
       }
     }
-  }, [vitals.heartRate, connectionMode, patientState]);
+  }, [vitals.heartRate, vitals.o2Sat, neurological.movement, neurological.eegIndex, patientState, appSettings]);
 
   // Automated Emergency Protocol
   useEffect(() => {
@@ -364,17 +398,67 @@ export default function App() {
     return () => clearInterval(interval);
   }, [patientState, connectionMode]);
 
-  const triggerSeizure = () => {
-    setPatientState('ictal');
-    setVitals(prev => ({ ...prev, pendingAlerts: prev.pendingAlerts + 1 }));
+  const triggerSeizure = (type: 'Auto' | 'Manual' = 'Manual') => {
+    if (patientState === 'warning' || patientState === 'ictal') return;
+    
+    setPatientState('warning');
+    setAlertCountdown(appSettings.countdownSeconds);
+    setCurrentSeizureType(type);
+    setCurrentSeizureStartTime(Date.now());
   };
+
+  const executeEmergency = () => {
+    setPatientState('ictal');
+    setSeizureCount(prev => prev + 1);
+    setWarningCount(prev => prev + 1);
+    setVitals(prev => ({ ...prev, pendingAlerts: prev.pendingAlerts + 1 }));
+    setAlertCountdown(null);
+  };
+
+  const cancelAlert = () => {
+    setPatientState('normal');
+    setAlertCountdown(null);
+    setCurrentSeizureType(null);
+    setCurrentSeizureStartTime(null);
+  };
+
+  // Countdown Timer Effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (patientState === 'warning' && alertCountdown !== null) {
+      if (alertCountdown > 0) {
+        timer = setTimeout(() => setAlertCountdown(prev => prev! - 1), 1000);
+      } else {
+        executeEmergency();
+      }
+    }
+    return () => clearTimeout(timer);
+  }, [patientState, alertCountdown]);
 
   const dismissSeizure = () => {
     setPatientState('post-ictal');
     setEmergencyState('idle');
     setLocation(null);
+    setWarningCount(0);
     setVitals(prev => ({ ...prev, pendingAlerts: Math.max(0, prev.pendingAlerts - 1) }));
     
+    // Log the seizure
+    if (currentSeizureStartTime && currentSeizureType) {
+      const duration = Math.round((Date.now() - currentSeizureStartTime) / 1000);
+      const newEvent: SeizureEvent = {
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date(currentSeizureStartTime).toISOString(),
+        duration,
+        type: currentSeizureType
+      };
+      const newHistory = [newEvent, ...seizureHistory];
+      setSeizureHistory(newHistory);
+      localStorage.setItem('epiguard-history', JSON.stringify(newHistory));
+    }
+    
+    setCurrentSeizureStartTime(null);
+    setCurrentSeizureType(null);
+
     // Return to normal after 10 seconds of post-ictal state
     setTimeout(() => {
       setPatientState('normal');
@@ -486,6 +570,38 @@ export default function App() {
         </div>
       )}
 
+      {/* Warning Modal (Countdown) */}
+      {patientState === 'warning' && alertCountdown !== null && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-red-900/90 backdrop-blur-md p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl max-w-md w-full p-8 text-center animate-in zoom-in-95 duration-300 border-4 border-red-500">
+            <div className="w-24 h-24 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full flex items-center justify-center mx-auto mb-6 animate-pulse">
+              <AlertTriangle className="w-12 h-12" />
+            </div>
+            <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-2 uppercase tracking-wider">Seizure Detected</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-8 text-lg">
+              Emergency contacts will be notified in:
+            </p>
+            <div className="text-8xl font-black text-red-600 dark:text-red-500 mb-8 tabular-nums">
+              {alertCountdown}
+            </div>
+            <div className="space-y-4">
+              <button 
+                onClick={cancelAlert}
+                className="w-full bg-gray-900 hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-100 text-white dark:text-gray-900 py-4 rounded-2xl font-bold text-xl transition-colors shadow-lg"
+              >
+                I'M OKAY - CANCEL
+              </button>
+              <button 
+                onClick={executeEmergency}
+                className="w-full bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:hover:bg-red-900/50 dark:text-red-400 py-4 rounded-2xl font-bold transition-colors"
+              >
+                SEND HELP NOW
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between transition-colors duration-200">
         <div className="flex items-center gap-3">
@@ -531,10 +647,15 @@ export default function App() {
             {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
 
-          <button className="relative p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors">
+          <button 
+            className="relative p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+            onClick={() => setWarningCount(0)}
+          >
             <Bell className="w-5 h-5" />
-            {vitals.pendingAlerts > 0 && (
-              <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white dark:border-gray-800"></span>
+            {warningCount > 0 && (
+              <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[20px] h-5 px-1 text-[10px] font-bold text-white bg-red-500 rounded-full border-2 border-white dark:border-gray-800">
+                {warningCount}
+              </span>
             )}
           </button>
           <div className="relative">
@@ -742,29 +863,39 @@ export default function App() {
         {/* Sidebar */}
         <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 p-4 hidden md:block transition-colors duration-200">
           <nav className="space-y-1">
-            <a href="#" className="flex items-center gap-3 px-3 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 rounded-lg font-medium">
+            <button 
+              onClick={() => setActiveTab('dashboard')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${
+                activeTab === 'dashboard' 
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' 
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+              }`}
+            >
               <Activity className="w-5 h-5" />
               Live Dashboard
-            </a>
-            <a href="#" className="flex items-center justify-between px-3 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg font-medium transition-colors">
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5" />
-                Alerts
-              </div>
-              {vitals.pendingAlerts > 0 && (
-                <span className="bg-red-100 text-red-600 py-0.5 px-2 rounded-full text-xs">
-                  {vitals.pendingAlerts}
-                </span>
-              )}
-            </a>
-            <a href="#" className="flex items-center gap-3 px-3 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg font-medium transition-colors">
-              <Users className="w-5 h-5" />
-              Patients
-            </a>
-            <a href="#" className="flex items-center gap-3 px-3 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg font-medium transition-colors">
+            </button>
+            <button 
+              onClick={() => setActiveTab('history')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${
+                activeTab === 'history' 
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' 
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+              }`}
+            >
+              <AlertTriangle className="w-5 h-5" />
+              History Log
+            </button>
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${
+                activeTab === 'settings' 
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' 
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+              }`}
+            >
               <Settings className="w-5 h-5" />
               Settings
-            </a>
+            </button>
           </nav>
         </aside>
 
@@ -772,69 +903,71 @@ export default function App() {
         <main className="flex-1 p-6 lg:p-8">
           <div className="max-w-6xl mx-auto">
             
-            {/* Automated Emergency Protocol Banner */}
-            {patientState === 'ictal' && (
-              <div className="mb-6 bg-red-600 text-white p-6 rounded-2xl shadow-xl animate-in slide-in-from-top-4 duration-500">
-                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-                  <div className="flex items-start gap-4">
-                    <div className="p-3 bg-red-500 rounded-full animate-pulse">
-                      <AlertTriangle className="w-8 h-8" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-2xl mb-1">CRITICAL: Seizure Detected</h3>
-                      <p className="text-red-100 text-lg">Patient AD is experiencing a tonic-clonic seizure.</p>
-                      
-                      {/* Emergency Actions Status */}
-                      <div className="mt-4 space-y-3">
-                        <div className="flex items-center gap-3 text-sm font-medium bg-red-700/50 px-4 py-2 rounded-lg">
-                          <MapPin className="w-5 h-5 text-red-200" />
-                          {emergencyState === 'locating' ? 'Acquiring GPS Location...' : `Location Locked: ${location?.lat.toFixed(4)}, ${location?.lng.toFixed(4)}`}
+            {activeTab === 'dashboard' && (
+              <>
+                {/* Automated Emergency Protocol Banner */}
+                {patientState === 'ictal' && (
+                  <div className="mb-6 bg-red-600 text-white p-6 rounded-2xl shadow-xl animate-in slide-in-from-top-4 duration-500">
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+                      <div className="flex items-start gap-4">
+                        <div className="p-3 bg-red-500 rounded-full animate-pulse">
+                          <AlertTriangle className="w-8 h-8" />
                         </div>
-                        
-                        <div className="flex items-center gap-3 text-sm font-medium bg-red-700/50 px-4 py-2 rounded-lg">
-                          {emergencyState === 'notified' ? (
-                            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                          ) : (
-                            <PhoneCall className={`w-5 h-5 text-red-200 ${emergencyState === 'calling' ? 'animate-bounce' : ''}`} />
-                          )}
-                          {emergencyState === 'locating' ? 'Preparing to call emergency contact...' : 
-                           emergencyState === 'calling' ? 'Automated System Calling Primary Contact...' : 
-                           'Emergency Contact Notified & GPS Sent.'}
-                        </div>
+                        <div>
+                          <h3 className="font-bold text-2xl mb-1">CRITICAL: Seizure Detected</h3>
+                          <p className="text-red-100 text-lg">Patient AD is experiencing a tonic-clonic seizure.</p>
+                          
+                          {/* Emergency Actions Status */}
+                          <div className="mt-4 space-y-3">
+                            <div className="flex items-center gap-3 text-sm font-medium bg-red-700/50 px-4 py-2 rounded-lg">
+                              <MapPin className="w-5 h-5 text-red-200" />
+                              {emergencyState === 'locating' ? 'Acquiring GPS Location...' : `Location Locked: ${location?.lat.toFixed(4)}, ${location?.lng.toFixed(4)}`}
+                            </div>
+                            
+                            <div className="flex items-center gap-3 text-sm font-medium bg-red-700/50 px-4 py-2 rounded-lg">
+                              {emergencyState === 'notified' ? (
+                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                              ) : (
+                                <PhoneCall className={`w-5 h-5 text-red-200 ${emergencyState === 'calling' ? 'animate-bounce' : ''}`} />
+                              )}
+                              {emergencyState === 'locating' ? 'Preparing to call emergency contact...' : 
+                               emergencyState === 'calling' ? 'Automated System Calling Primary Contact...' : 
+                               'Emergency Contact Notified & GPS Sent.'}
+                            </div>
 
-                        {/* Manual Override Buttons for Phone */}
-                        <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-red-500/50">
-                          <a href={`tel:${emergencyPhone}`} className="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium transition-colors">
-                            <PhoneCall className="w-4 h-4" /> Call Contact Now
-                          </a>
-                          <a href={`sms:${emergencyPhone}?body=${encodeURIComponent(smsBody)}`} className="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium transition-colors">
-                            <MessageSquare className="w-4 h-4" /> Send GPS via SMS
-                          </a>
+                            {/* Manual Override Buttons for Phone */}
+                            <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-red-500/50">
+                              <a href={`tel:${emergencyPhone}`} className="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium transition-colors">
+                                <PhoneCall className="w-4 h-4" /> Call Contact Now
+                              </a>
+                              <a href={`sms:${emergencyPhone}?body=${encodeURIComponent(smsBody)}`} className="bg-red-500 hover:bg-red-400 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium transition-colors">
+                                <MessageSquare className="w-4 h-4" /> Send GPS via SMS
+                              </a>
+                            </div>
+                          </div>
                         </div>
                       </div>
+                      
+                      <button 
+                        onClick={dismissSeizure} 
+                        className="w-full md:w-auto bg-white text-red-600 px-8 py-4 rounded-xl font-bold text-lg hover:bg-red-50 transition-colors shadow-lg"
+                      >
+                        Acknowledge & Dismiss
+                      </button>
                     </div>
                   </div>
-                  
-                  <button 
-                    onClick={dismissSeizure} 
-                    className="w-full md:w-auto bg-white text-red-600 px-8 py-4 rounded-xl font-bold text-lg hover:bg-red-50 transition-colors shadow-lg"
-                  >
-                    Acknowledge & Dismiss
-                  </button>
-                </div>
-              </div>
-            )}
+                )}
 
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Live Patient Vitals</h2>
-              <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400 font-medium">
-                <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                </span>
-                {connectionMode === 'watch' ? 'Live Watch Data' : 'Realistic Simulation Active'}
-              </div>
-            </div>
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Live Patient Vitals</h2>
+                  <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400 font-medium">
+                    <span className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                    </span>
+                    {connectionMode === 'watch' ? 'Live Watch Data' : 'Realistic Simulation Active'}
+                  </div>
+                </div>
             
             {/* Vitals Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -924,14 +1057,15 @@ export default function App() {
             </div>
 
             {/* Neurological Monitoring / Seizure Detection */}
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col md:flex-row items-center justify-between mb-6 gap-4">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Neurological Monitoring</h2>
               <button 
-                onClick={triggerSeizure}
-                disabled={patientState === 'ictal'}
-                className="text-sm bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
+                onClick={() => triggerSeizure('Manual')}
+                disabled={patientState === 'warning' || patientState === 'ictal'}
+                className="w-full md:w-auto bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-full font-bold text-lg shadow-lg shadow-red-500/30 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2"
               >
-                Trigger Test Seizure
+                <AlertTriangle className="w-6 h-6" />
+                SOS / HELP
               </button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
@@ -942,18 +1076,20 @@ export default function App() {
                     <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-lg">
                       <Brain className="w-6 h-6" />
                     </div>
-                    <Sparkline data={neurological.history.eegIndex} color="#4f46e5" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20'}`}>
                     {neurological.seizureRisk}
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-500 dark:text-gray-400">EEG Activity Index</p>
-                <div className="flex items-baseline gap-1">
-                  <p className={`text-3xl font-bold tabular-nums transition-colors duration-300 ${patientState === 'ictal' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
-                    {neurological.eegIndex.toFixed(0)}
-                  </p>
-                  <span className="text-sm text-gray-500">/ 100</span>
+                <div className="flex items-end justify-between mt-1">
+                  <div className="flex items-baseline gap-1">
+                    <p className={`text-3xl font-bold tabular-nums transition-colors duration-300 ${patientState === 'ictal' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
+                      {neurological.eegIndex.toFixed(0)}
+                    </p>
+                    <span className="text-sm text-gray-500">/ 100</span>
+                  </div>
+                  <Sparkline data={neurological.history.eegIndex} color="#4f46e5" className="h-10 w-24 opacity-90" />
                 </div>
                 {patientState === 'ictal' && (
                   <div className="mt-4 h-2 w-full bg-red-200 rounded-full overflow-hidden">
@@ -969,18 +1105,20 @@ export default function App() {
                     <div className="p-3 bg-teal-50 dark:bg-teal-900/20 text-teal-600 dark:text-teal-400 rounded-lg">
                       <Zap className="w-6 h-6" />
                     </div>
-                    <Sparkline data={neurological.history.movement} color="#0d9488" />
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full ${patientState === 'ictal' ? 'bg-red-500 text-white' : 'text-teal-600 bg-teal-50 dark:bg-teal-900/20'}`}>
                     {neurological.seizureRisk}
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Movement / Accelerometer</p>
-                <div className="flex items-baseline gap-1">
-                  <p className={`text-3xl font-bold tabular-nums transition-colors duration-300 ${patientState === 'ictal' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
-                    {neurological.movement.toFixed(0)}
-                  </p>
-                  <span className="text-sm text-gray-500">/ 100</span>
+                <div className="flex items-end justify-between mt-1">
+                  <div className="flex items-baseline gap-1">
+                    <p className={`text-3xl font-bold tabular-nums transition-colors duration-300 ${patientState === 'ictal' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
+                      {neurological.movement.toFixed(0)}
+                    </p>
+                    <span className="text-sm text-gray-500">/ 100</span>
+                  </div>
+                  <Sparkline data={neurological.history.movement} color="#0d9488" className="h-10 w-24 opacity-90" />
                 </div>
                 {patientState === 'ictal' && (
                   <div className="mt-4 h-2 w-full bg-red-200 rounded-full overflow-hidden">
@@ -989,6 +1127,164 @@ export default function App() {
                 )}
               </div>
             </div>
+              </>
+            )}
+
+            {activeTab === 'history' && (
+              <div className="animate-in fade-in duration-300">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Seizure History</h2>
+                  <div className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 px-4 py-2 rounded-full font-medium text-sm">
+                    {seizureHistory.length} Events Logged
+                  </div>
+                </div>
+                
+                {seizureHistory.length === 0 ? (
+                  <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-12 text-center">
+                    <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Activity className="w-8 h-8 text-gray-400" />
+                    </div>
+                    <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No events recorded</h3>
+                    <p className="text-gray-500 dark:text-gray-400">Your seizure history will appear here.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {seizureHistory.map((event) => (
+                        <div key={event.id} className="p-6 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-center gap-4">
+                              <div className={`p-3 rounded-full ${event.type === 'Auto' ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400' : 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'}`}>
+                                {event.type === 'Auto' ? <Brain className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
+                              </div>
+                              <div>
+                                <h4 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                  {event.type === 'Auto' ? 'Auto-Detected Seizure' : 'Manual SOS Trigger'}
+                                </h4>
+                                <p className="text-sm text-gray-500 dark:text-gray-400">
+                                  {new Date(event.timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-lg font-bold text-gray-900 dark:text-white tabular-nums">
+                                {event.duration}s
+                              </div>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Duration</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <div className="animate-in fade-in duration-300 max-w-3xl">
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">Detection Settings</h2>
+                
+                <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-6 mb-6">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-red-500" />
+                    Alert Preferences
+                  </h3>
+                  
+                  <div className="space-y-6">
+                    <div>
+                      <div className="flex justify-between mb-2">
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Countdown Timer (Seconds)</label>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">{appSettings.countdownSeconds}s</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="5" 
+                        max="60" 
+                        step="5"
+                        value={appSettings.countdownSeconds}
+                        onChange={(e) => {
+                          const newSettings = { ...appSettings, countdownSeconds: parseInt(e.target.value) };
+                          setAppSettings(newSettings);
+                          localStorage.setItem('epiguard-settings', JSON.stringify(newSettings));
+                        }}
+                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-red-500"
+                      />
+                      <p className="text-xs text-gray-500 mt-2">Time to cancel a false alarm before emergency contacts are notified.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-emerald-500" />
+                    Sensitivity Thresholds
+                  </h3>
+                  
+                  <div className="space-y-8">
+                    <div>
+                      <div className="flex justify-between mb-2">
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Heart Rate Threshold (BPM)</label>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">{appSettings.hrThreshold}</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="100" 
+                        max="180" 
+                        step="5"
+                        value={appSettings.hrThreshold}
+                        onChange={(e) => {
+                          const newSettings = { ...appSettings, hrThreshold: parseInt(e.target.value) };
+                          setAppSettings(newSettings);
+                          localStorage.setItem('epiguard-settings', JSON.stringify(newSettings));
+                        }}
+                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-emerald-500"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between mb-2">
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Movement Sensitivity</label>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">{appSettings.movementThreshold}</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="100" 
+                        step="5"
+                        value={appSettings.movementThreshold}
+                        onChange={(e) => {
+                          const newSettings = { ...appSettings, movementThreshold: parseInt(e.target.value) };
+                          setAppSettings(newSettings);
+                          localStorage.setItem('epiguard-settings', JSON.stringify(newSettings));
+                        }}
+                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-emerald-500"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between mb-2">
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">EEG Activity Threshold</label>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">{appSettings.eegThreshold}</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="100" 
+                        step="5"
+                        value={appSettings.eegThreshold}
+                        onChange={(e) => {
+                          const newSettings = { ...appSettings, eegThreshold: parseInt(e.target.value) };
+                          setAppSettings(newSettings);
+                          localStorage.setItem('epiguard-settings', JSON.stringify(newSettings));
+                        }}
+                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-emerald-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
           </div>
         </main>
